@@ -32,8 +32,10 @@ Drip.nes
 ```
 Games are ranked first according to the reported build, for example a revision is ranked higher than a beta, which
 in turn is ranked higher than a alpha. Between different revisions or versions their number is used to break ties.
+
 The second ranking criteria is game region, which by default prioritizes USA and European titles, region preference is customized through 
 the --regions_preference script argument, default: 'U,E' - regions are case sensitive.
+
 The third ranking criteria is timestamp, mostly used to sort between prototypes and betas.
 
 The script it's geared towards English, but feel free to modify it:
