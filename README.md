@@ -14,7 +14,7 @@ It is guaranteed to keep 1 (and only 1) ROM of each title.
 For instance (this is safe to run... you need to explicity put the **--delete** flag actually delete stuff.)
 
 ```bash
-python clean_roms.py --region U,E --rom_dir /roms/snes
+python clean_roms.py --regions U,E --rom_dir /roms/snes
 ...
 Solomon's Key 2.nes
 	:OK:0.25MB:Solomon's Key 2 (Europe).nes
@@ -34,7 +34,7 @@ Games are ranked first according to the reported build, for example a revision i
 in turn is ranked higher than a alpha. Between different revisions or versions their number is used to break ties.
 
 The second ranking criteria is game region, which by default prioritizes USA and European titles, region preference is customized through 
-the --regions_preference script argument, default: 'U,E' - regions are case sensitive.
+the --regions argument, default: 'U,E' - regions are case sensitive.
 
 The third ranking criteria is timestamp, mostly used to sort between prototypes and betas.
 
@@ -43,5 +43,5 @@ The script it's geared towards English, but feel free to modify it:
 When you are happy with list of "KO" (aka, the files that the script will delete), run it like so:
 
 ```bash
-python clean_roms.py --region U,E --rom_dir /Volumes/roms -- --delete
+python clean_roms.py --regions U,E --rom_dir /Volumes/roms -- --delete
 ```
