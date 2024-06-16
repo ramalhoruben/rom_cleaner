@@ -30,9 +30,8 @@ def valid_brackets(filename):
     return not stack
     
 class ROMSET():
-    def __init__(self, root_dir, delete, regions, ignore_dirs):
+    def __init__(self, root_dir, regions, ignore_dirs):
         self.root_dir = root_dir
-        self.delete = delete
         self.rank_table = self.build_table([p.strip() for p in regions.split(',')])
         self.titles = {}
         self.roms_txt = 'roms.txt'
@@ -64,7 +63,7 @@ class ROMSET():
             self.titles[rom_obj.stripped_filename]['roms'] = []
         self.titles[rom_obj.stripped_filename]['roms'].append(rom_obj)
 
-    def clean(self):
+    def clean(self, delete=False):
 
         tot_files = 0
         tot_size = 0
@@ -93,7 +92,7 @@ class ROMSET():
 
                     print('\t:{}:{:.2f}MB:{}'.format(action, rom.get_filesize_mb(), rom.base_filename))
 
-                    if not is_main and not is_part_of_main and self.delete:
+                    if not is_main and not is_part_of_main and delete:
                         print('\tDeleting: {}'.format(rom.full_path_filename))
                         os.remove(rom.full_path_filename)
                     if is_main:
@@ -113,11 +112,11 @@ class ROMSET():
                 unq_size += title['roms'][0].get_filesize_mb()
         
         # Remove rom list to force rebuilding an updated list on next run.
-        if self.delete and os.path.exists(self.roms_txt):
+        if delete and os.path.exists(self.roms_txt):
             os.remove(self.roms_txt)
             
-        print('total unique files: {} ({:.2f}MB)'.format(len(self.titles),unq_size))
-        print('total files       : {} ({:.2f}MB)'.format(tot_files, tot_size))        
+        print('total unique titles: {} ({:.2f}MB)'.format(len(self.titles),unq_size))
+        print('total roms         : {} ({:.2f}MB)'.format(tot_files, tot_size))        
 
     # Build a table to rank title region according to supplied
     # preferences, or else according to alphabetic order.
@@ -214,9 +213,12 @@ class Rom():
         if match:
             part_type = match.group(1) 
             part_val = match.group(2)
-            # Check if numeric or not, some tags use letters for sequence
+            # Check if numeric or not, some roms use ascii (A, B..) for sequence
             if part_val.isnumeric(): part_num= int(part_val)
-            else: part_num = ord(part_val[0])
+            elif len(part_val)==1: part_num = ord(part_val[0])
+            else:
+                print('Unknown disc sequence, change to numbers to proceed.')
+                sys.exit(1)
             
             return (part_type, int(part_num))
         return None
@@ -226,10 +228,11 @@ class Rom():
         for tag in self.tokens:
             v_info = self.tag_isvolume(tag)
             if v_info: return v_info[1]
-        return 0
+        return -1
                 
     def has_multiple_disc(self):
-        return self.get_disc_number()
+        #Found at least one ocorrence where disc numbers started at 0
+        return self.get_disc_number() >= 0
     
     # Returns true if roms differ from each other only by volume information
     def is_part_of_main_of(self, rom):
@@ -313,13 +316,16 @@ if __name__ == "__main__":
     # parse args:
     args = parseArgs()
     # create the ROMSET class:
-    romset = ROMSET(args.rom_dir, args.delete, args.regions, args.ignore_dirs)
+    romset = ROMSET(args.rom_dir, args.regions, args.ignore_dirs)
     # get the list of games:
     rom_list = romset.get_roms()
     # create a rom object for each file:
     for full_path_filename in rom_list:
         romset.add_rom(Rom(full_path_filename))
-    #print('Bag of tags:')
-    #print(list(sorted(bag_tags)))
+
+    print('rehearsing rom cleanse...')
     romset.clean()
+    if(args.delete):
+        print('now deleting...')
+        romset.clean(args.delete)
     print('all done!')
