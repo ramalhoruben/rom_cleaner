@@ -1,10 +1,39 @@
-import os, sys, argparse
-import operator
+import os, sys, re, argparse
+from functools import reduce
+from dateutil.parser import parse
+from datetime import datetime
+from colorama import Fore, Style, Back
+from colorama import init as colorama_init
 
-class ALL_ROMS():
-    def __init__(self, root_dir, delete):
+bag_tags = set()
+
+country_codes = {
+    'As':'Asia', 'A': 'Australia', 'B': 'Brazil', 'C': 'Canada', 'Ch':'China', 'D': 'Netherlands', 'E':'Europe', 'F':'France',
+    'Fn': 'Finland', 'G': 'Germany', 'Gr': 'Greece', 'Hk': 'Hong Kong', 'I': 'Italy','J':'Japan','K':'Korea','Nl':'Netherlands',
+    'No':'Norway', 'R': 'Russia', 'S': 'Spain', 'Sw': 'Sweden', 'U': 'USA', 'UK': 'United Kingdom', 'W': 'World', 
+    'Unl': 'Unlicensed', 'PD': 'Public Domain', 'Unk': 'Unknown'
+}
+
+release_codes = ['!','rev','alternate','v','beta','proto','alpha','promo','pirate','demo','sample','bootleg','o','b']
+
+def valid_brackets(filename):
+    """ Validate that the filename has matching parentheses or brackets. """
+    stack = []
+    matching_bracket = {')': '(', ']': '['}
+    
+    for char in filename:
+        if char in '([':
+            stack.append(char)
+        elif char in ')]':
+            if not stack or stack.pop() != matching_bracket[char]:
+                return False
+    return not stack
+    
+class ROMSET():
+    def __init__(self, root_dir, delete, regions_preference):
         self.root_dir = root_dir
         self.delete = delete
+        self.rank_table = self.build_table(regions_preference)
         self.roms = {}
 
     def get_roms(self):
@@ -16,6 +45,8 @@ class ALL_ROMS():
         else:
             game_list = []
             for dirname, dirnames, filenames in os.walk(self.root_dir):
+                # Modify dirnames in-place to skip 'images' and 'videos'
+                dirnames[:] = [d for d in dirnames if d not in ['images', 'videos']]            
                 # print path to all filenames.
                 for filename in filenames:
                     aFile = os.path.join(dirname, filename)
@@ -30,37 +61,65 @@ class ALL_ROMS():
             self.roms[rom_obj.stripped_filename] = {}
             self.roms[rom_obj.stripped_filename]['roms'] = []
         self.roms[rom_obj.stripped_filename]['roms'].append(rom_obj)
-
+        
     def clean(self):
-        total_files = 0
+        tot_files = 0
+        tot_size = 0
+        unq_size = 0
+
         for stripped_filename, roms in self.roms.items():
             if len(roms['roms']) > 1:
-                print(stripped_filename)
+                print(Fore.BLACK + Back.LIGHTWHITE_EX + stripped_filename + Style.RESET_ALL)
                 have_marked = False
-                delete_txt = 'OK'
-                for r in sorted(roms['roms'], key=lambda x: x.weight, reverse=True):
-                    total_files += 1
-                    print('\t:{}:{}:{}'.format(delete_txt, r.weight, r.base_filename))
+                delete_txt = Fore.GREEN + 'OK' + Style.RESET_ALL
+                
+                for r in sorted(roms['roms'], key=lambda x: (*x.build_rank(), x.region_rank(self.rank_table), x.timestamp_rank()), reverse=True):
+
+                    print('\t:{}:{:.2f}MB:{}'.format(delete_txt, r.get_filesize_mb(), r.base_filename))
                     if have_marked is True and self.delete is True:
                         print('\tDeleting: {}'.format(r.full_path_filename))
                         os.remove(r.full_path_filename)
                     if have_marked is False:
+                        unq_size += r.get_filesize_mb()
                         have_marked = True
-                        delete_txt = 'KO'
+                        delete_txt = Fore.RED + 'KO' + Style.RESET_ALL
 
-        print('total unique files: {}'.format(len(self.roms)))
-        print('total files       : {}'.format(total_files))
+                    #Calculate stats
+                    tot_files += 1
+                    tot_size += r.get_filesize_mb()
+            else:
+                #Calculate stats            
+                tot_files += 1
+                tot_size += roms['roms'][0].get_filesize_mb()
+                unq_size += roms['roms'][0].get_filesize_mb()
+                
+        print('total unique files: {} ({:.2f}MB)'.format(len(self.roms),unq_size))
+        print('total files       : {} ({:.2f}MB)'.format(tot_files, tot_size))
+
+    # Build a table to rank title region according to supplied
+    # preferences, or else according to alphabetic order.
+    def build_table(self, user_ccs):
+        
+        # Check if priority country codes is valid
+        for cc in user_ccs:
+            found=False
+            for cc2 in country_codes.items():
+                if cc in cc2:  found=True
+            if found==False:
+                raise ValueError("Must be a valid country code, code is case sensitive.")
+        
+        alpha_rank = [(i, item) for i, item in enumerate(sorted(set(country_codes) - set(user_ccs),reverse=True))]
+        return alpha_rank + [(i,item) for i, item in enumerate(reversed(user_ccs),start=len(alpha_rank))]
 
 
 class Rom():
     def __init__(self, full_path_filename):
-        # super mario (hack) (!).nes:
+
         self.full_path_filename = full_path_filename
         self.base_filename, \
+        self.filesize, \
         self.stripped_filename, \
-        self.tokens, \
-        self.base_filename = self.describe_rom(full_path_filename)
-        self.weight = self.calculate_weight()
+        self.tokens = self.describe_rom(full_path_filename)
 
     # Helper function:
     def find(self, s, ch):
@@ -68,93 +127,131 @@ class Rom():
 
     # Extraction tags:
     def describe_rom(self, full_path_filename):
-        # Return variables:
-        ret_base_filename = ''
-        ret_stripped_filename = ''
-        ret_tokens = []
-        ret_base_filename = os.path.basename(full_path_filename)
+        
+        base_filename = os.path.basename(full_path_filename)
+        filesize = os.path.getsize(full_path_filename)
 
-        # Get all the tokens:
-        s_p = self.find(ret_base_filename, '(')
-        e_p = self.find(ret_base_filename, ')')
-        s_b = self.find(ret_base_filename, '[')
-        e_b = self.find(ret_base_filename, ']')
-        for i in range(len(s_p)):
-            ret_tokens.append(ret_base_filename[s_p[i]:e_p[i] + 1])
-        for i in range(len(s_b)):
-            ret_tokens.append(ret_base_filename[s_b[i]:e_b[i] + 1])
-        ret_stripped_filename = ret_base_filename
-        for m in ret_tokens:
-            ret_stripped_filename = ret_stripped_filename.replace(m, '')
-        ret_stripped_filename = ret_stripped_filename[:-4].strip() + ret_base_filename[-4:]
+        # Strip filename of brackets and contents
+        stripped_filename = re.sub(r'[\[\(].*?[\]\)]', '', base_filename).strip()
+        # Also remove any leftover spaces before file extension
+        stripped_filename = re.sub(r'\s+\.', '.', stripped_filename)
 
-        return ret_base_filename, ret_stripped_filename, ret_tokens, ret_base_filename
+        def extract_brackets_content(filename):
+            """ Extract content within parentheses and square brackets using regular expressions. """
+            # Patterns to match content within parentheses and square brackets
+            pattern_parentheses = re.compile(r'\(([^()]+)\)')
+            pattern_brackets = re.compile(r'\[([^\[\]]+)\]')
+            
+            # Find all matches
+            matches_parentheses = pattern_parentheses.findall(filename)
+            matches_brackets = pattern_brackets.findall(filename)
+            
+            return matches_parentheses + matches_brackets
+            
+        def extract_tags(filename):
+            if not valid_brackets(filename):
+                raise ValueError("Invalid format: Unmatched parentheses or square brackets")
+            else:
+                rom_tags = []
+                brackets_contents = extract_brackets_content(filename)
+                if brackets_contents:
+                    per_bracket_tags = map(lambda s: set([tag.strip() for tag in s.split(',')]),brackets_contents)
+                    rom_tags = list(sorted(reduce(set.union, per_bracket_tags)))
+                
+                return rom_tags
 
-    # Calculate a weight for easy sorting:
-    def calculate_weight(self):
-        # http://www.theisozone.com/tutorials/other/general/know-your-roms-a-guide-to-identifying-the-symbols/
-        priorities = [
-        {'token': '[a]',   'weight': 9,   'description': 'Alternate'},
-        {'token': '[b]',   'weight': -99, 'description': 'Bad Dump'},
-        {'token': '[BF]',  'weight': 7,   'description': 'Bung Fix'},
-        {'token': '[c]',   'weight': 8,   'description': 'Cracked'},
-        {'token': '[f]',   'weight': 6,   'description': 'Other Fix'},
-        {'token': '[h]',   'weight': 5,   'description': 'Hack'},
-        {'token': '[o]',   'weight': 10,  'description': 'Overdump'},
-        {'token': '[p]',   'weight': 4,   'description': 'Pirate'},
-        {'token': '[t]',   'weight': 3,   'description': 'Trained'},
-        {'token': '[T]',   'weight': 2,   'description': 'Translation'},
-        {'token': '(Unl)', 'weight': 1,   'description': 'Unlicensed'},
-        {'token': '[x]',   'weight': -99, 'description': 'Bad Checksum'},
-        {'token': '[!]',   'weight': 100, 'description': 'Verified Good Dump'},
-        {'token': '(a)',   'weight': 80,  'description': 'Australian'},
-        {'token': '(C)',   'weight': 0,   'description': 'Chinese'},
-        {'token': '(E)',   'weight': 85,  'description': 'Europe'},
-        {'token': '(F)',   'weight': 0,   'description': 'French'},
-        {'token': '(FN)',  'weight': 0,   'description': 'Finland'},
-        {'token': '(G)',   'weight': 0,   'description': 'German'},
-        {'token': '(GR)',  'weight': 0,   'description': 'Greece'},
-        {'token': '(HK)',  'weight': 0,   'description': 'Hong Kong'},
-        {'token': '(I)',   'weight': 0,   'description': 'Italian'},
-        {'token': '(J)',   'weight': 0,   'description': 'Japan'},
-        {'token': '(K)',   'weight': 0,   'description': 'Korean'},
-        {'token': '(NL)',  'weight': 0,   'description': 'Dutch'},
-        {'token': '(PD)',  'weight': 80,  'description': 'Public Domain'},
-        {'token': '(S)',   'weight': 0,   'description': 'Spanish'},
-        {'token': '(SW)',  'weight': 0,   'description': 'Sweden'},
-        {'token': '(U)',   'weight': 95,  'description': 'USA'},
-        {'token': '(UK)',  'weight': 90,  'description': 'England'},
-        {'token': '(Unk)', 'weight': 0,   'description': 'Unknown Country'},
-        {'token': '(-)',   'weight': 0,   'description': 'Unknown Country'},
-        {'token': '(Sachen-USA)', 'weight':10, 'description': 'found it'},
-        {'token': '(Sachen-English)', 'weight':10, 'description': 'found it'}]
+        tags = extract_tags(base_filename)
 
-        high_token_penalty = -2 * len(self.tokens)
-        token_value = 0
+        global bag_tags
+        bag_tags = bag_tags.union(tags)
 
-        for token in self.tokens:
-            for priority in priorities:
-                if token.lower() == priority['token'].lower():
-                    token_value += priority['weight']
-        return token_value + high_token_penalty
+        return base_filename, filesize, stripped_filename, tags
+    
+    def get_filesize_mb(self):
+        return self.filesize / (1024.0 ** 2)
+   
+    # Deduce rom region or regions based on filename tags
+    def get_romregions(self):
+    
+        countries = []
+        for tag in self.tokens:
+            for k, v in country_codes.items():
+                if tag in (k,v) : countries.append(k)
+        
+        if len(countries):
+            return countries
+        else: return 'Unk'
+    
+    # Rank rom according to tagged region(s) and user preferences
+    def region_rank(self,rank_table):
+                
+        def score_rom(rom_ccs):
+            result = []
+            for item in rank_table:
+                if item[1] in rom_ccs:
+                    result.append(item[0])
+            return result
+    
+        rom_ccs = self.get_romregions()       
+        return max(score_rom(rom_ccs))
+    
+    # If a timestamp is included capture it to resolve ties, if no timestamp
+    # was supplied assume it is the most recent build
+    def timestamp_rank(self):
+
+        for tag in self.tokens:
+            try:
+                return parse(tag)
+            except (ValueError, OverflowError):
+                continue
+        return datetime.max
+    
+    # If build information is included in filename, use build type and
+    # version (if provided) to score roms according to 'release_codes' order.
+    def build_rank(self):
+        
+        build = float('inf')
+        version = float('inf')
+        
+        pattern = r'\b((?:{}))\s*(\d*\.?\d*)\b'.format('|'.join(release_codes))
+        regex = re.compile(pattern)
+
+        for tag in self.tokens:
+            match = regex.search(tag.lower())
+            if match:
+                build = match.group(1)
+                if len(match.groups()) == 2 and match.group(2):
+                    version = float(match.group(2).lstrip('0'))
+                break
+
+        ranks = [(i,item) for i, item in enumerate(reversed(release_codes))]
+        for score, rank in ranks:
+            if rank == build:
+                return (score, version)
+        
+        return (float('inf'), version)
 
 # Parse command line args:
 def parseArgs():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--regions', help='Preferences for sorting', default='U,E')
     parser.add_argument('--rom_dir', help='Location where your roms are stored', default='y://')
     parser.add_argument('--delete', help='WARNING: setting this will delete the roms!', action='store_true')
     args = parser.parse_args()
     return args
 
 if __name__ == "__main__":
+    colorama_init()
     # parse args:
     args = parseArgs()
-    # create the ALL_ROMS class:
-    all_roms = ALL_ROMS(args.rom_dir, args.delete)
+    # create the ROMSET class:
+    romset = ROMSET(args.rom_dir, args.delete, [p.strip() for p in args.regions.split(',')])
     # get the list of games:
-    game_list = all_roms.get_roms()
+    game_list = romset.get_roms()
     # create a rom object for each file:
     for full_path_filename in game_list:
-        all_roms.add_rom(Rom(full_path_filename))
-    all_roms.clean()
+        romset.add_rom(Rom(full_path_filename))
+    print('Bag of tags:')
+    print(list(sorted(bag_tags)))
+    romset.clean()
     print('all done!')
